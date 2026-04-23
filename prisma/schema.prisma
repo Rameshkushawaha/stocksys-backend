@@ -1,0 +1,669 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// StockSys — Production Prisma Schema
+// Multi-shop SaaS | FIFO batches | GST | Returns | Credits | Loyalty
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ENUMS
+// ══════════════════════════════════════════════════════════════════════════════
+
+enum UserRole {
+  super_admin   // SaaS owner — sees all shops
+  admin         // Shop owner / manager
+  stock_adder   // Can only add stock
+  seller        // Cashier — can bill
+  accountant    // Read-only + reports
+}
+
+enum TransactionType {
+  purchase        // stock in via purchase
+  sale            // stock out via sale
+  purchase_return // supplier return
+  sale_return     // customer return
+  adjustment_in   // manual stock add
+  adjustment_out  // wastage / damage
+  opening_stock   // initial stock entry
+}
+
+enum PaymentMode {
+  Cash
+  Card
+  UPI
+  NetBanking
+  Credit    // udhaar
+  Mixed
+}
+
+enum SaleStatus {
+  completed
+  voided
+  returned
+  partial_return
+}
+
+enum PurchaseStatus {
+  pending
+  received
+  partial
+  cancelled
+}
+
+enum CreditStatus {
+  pending
+  partial
+  cleared
+  written_off
+}
+
+enum NotificationType {
+  low_stock
+  expiry_alert
+  credit_due
+  purchase_due
+  sale_return
+  system
+}
+
+enum TaxType {
+  GST
+  IGST
+  exempt
+  zero_rated
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// TENANT LAYER
+// ══════════════════════════════════════════════════════════════════════════════
+
+model Shop {
+  id          Int      @id @default(autoincrement())
+  name        String
+  ownerName   String
+  mobile      String
+  email       String?
+  address     String?
+  city        String?
+  state       String?
+  pincode     String?
+  gstNo       String?
+  panNo       String?
+  logoUrl     String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  users            User[]
+  products         Product[]
+  categories       Category[]
+  brands           Brand[]
+  units            Unit[]
+  stockBatches     StockBatch[]
+  stockTransactions StockTransaction[]
+  sales            Sale[]
+  saleReturns      SaleReturn[]
+  purchases        Purchase[]
+  suppliers        Supplier[]
+  customers        Customer[]
+  notifications    Notification[]
+  settings         ShopSettings?
+  auditLogs        AuditLog[]
+
+  @@map("shops")
+}
+
+model ShopSettings {
+  id                  Int     @id @default(autoincrement())
+  shopId              Int     @unique
+  lowStockThreshold   Int     @default(10)
+  taxIncluded         Boolean @default(false)
+  enableLoyalty       Boolean @default(true)
+  pointsPerRupee      Float   @default(1.0)   // 1 point per ₹1 spent
+  pointsRedeemRatio   Float   @default(0.25)  // 1 point = ₹0.25
+  expiryAlertDays     Int     @default(30)
+  invoicePrefix       String  @default("INV")
+  invoiceCounter      Int     @default(1)
+  currencySymbol      String  @default("₹")
+  enableFIFO          Boolean @default(true)
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@map("shop_settings")
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// AUTH LAYER
+// ══════════════════════════════════════════════════════════════════════════════
+
+model User {
+  id           Int      @id @default(autoincrement())
+  shopId       Int?                          // null = super_admin
+  name         String
+  mobile       String?
+  email        String?  @unique
+  pinHash      String                        // bcrypt hashed 4-digit PIN
+  passwordHash String?                       // optional password login
+  role         UserRole
+  avatar       String   @default("")
+  isActive     Boolean  @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  deletedAt    DateTime?
+
+  shop Shop? @relation(fields: [shopId], references: [id])
+
+  // Relations
+  sessions          Session[]
+  purchases         Purchase[]
+  stockTransactions StockTransaction[]
+  saleReturns       SaleReturn[]
+  creditPayments    CreditPayment[]
+  auditLogs         AuditLog[]
+  receipts          Sale[]   @relation("SaleOperator")
+
+  @@index([shopId])
+  @@index([email])
+  @@map("users")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  userId       Int
+  token        String   @unique
+  refreshToken String?  @unique
+  expiresAt    DateTime
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PRODUCT LAYER
+// ══════════════════════════════════════════════════════════════════════════════
+
+model Category {
+  id        Int      @id @default(autoincrement())
+  shopId    Int
+  name      String
+  parentId  Int?     // for sub-categories
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  shop     Shop      @relation(fields: [shopId], references: [id])
+  parent   Category? @relation("SubCategory", fields: [parentId], references: [id])
+  children Category[] @relation("SubCategory")
+  products Product[]
+
+  @@unique([shopId, name])
+  @@map("categories")
+}
+
+model Brand {
+  id        Int      @id @default(autoincrement())
+  shopId    Int
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  shop     Shop      @relation(fields: [shopId], references: [id])
+  products Product[]
+
+  @@unique([shopId, name])
+  @@map("brands")
+}
+
+model Unit {
+  id           Int      @id @default(autoincrement())
+  shopId       Int
+  name         String   // e.g. "Piece", "Kg", "Litre"
+  abbreviation String   // e.g. "Pcs", "Kg", "Ltr"
+  isActive     Boolean  @default(true)
+
+  shop     Shop      @relation(fields: [shopId], references: [id])
+  products Product[]
+
+  @@unique([shopId, name])
+  @@map("units")
+}
+
+model Product {
+  id             Int      @id @default(autoincrement())
+  shopId         Int
+  categoryId     Int?
+  brandId        Int?
+  unitId         Int?
+  barcode        String?                    // scannable barcode
+  sku            String?                    // internal SKU
+  name           String
+  description    String?
+  hsnCode        String?                    // HSN for GST
+  taxPercent     Float    @default(18.0)    // GST %
+  taxType        TaxType  @default(GST)
+  cessPercent    Float    @default(0)
+  minStock       Int      @default(10)      // low-stock threshold
+  maxStock       Int?
+  isWeighed      Boolean  @default(false)   // sold by weight
+  expiryTracked  Boolean  @default(false)
+  imageUrl       String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  deletedAt      DateTime?
+
+  shop     Shop      @relation(fields: [shopId], references: [id])
+  category Category? @relation(fields: [categoryId], references: [id])
+  brand    Brand?    @relation(fields: [brandId], references: [id])
+  unit     Unit?     @relation(fields: [unitId], references: [id])
+
+  stockBatches      StockBatch[]
+  stockTransactions StockTransaction[]
+  saleItems         SaleItem[]
+  purchaseItems     PurchaseItem[]
+  saleReturnItems   SaleReturnItem[]
+
+  @@unique([shopId, barcode])
+  @@unique([shopId, sku])
+  @@index([shopId])
+  @@index([barcode])
+  @@map("products")
+}
+
+// ─── FIFO Stock Batches ───────────────────────────────────────────────────────
+model StockBatch {
+  id              Int      @id @default(autoincrement())
+  shopId          Int
+  productId       Int
+  purchaseId      Int?     // null = opening stock / manual
+  batchNo         String?
+  purchasePrice   Decimal  @db.Decimal(10, 2)
+  sellingPrice    Decimal  @db.Decimal(10, 2)
+  mrp             Decimal? @db.Decimal(10, 2)
+  qtyReceived     Float
+  qtyAvailable    Float                          // decremented on each sale
+  manufactureDate DateTime?
+  expiryDate      DateTime?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+
+  shop     Shop     @relation(fields: [shopId], references: [id])
+  product  Product  @relation(fields: [productId], references: [id])
+  purchase Purchase? @relation(fields: [purchaseId], references: [id])
+
+  saleItems         SaleItem[]
+  stockTransactions StockTransaction[]
+
+  @@index([shopId, productId])
+  @@index([productId, createdAt])   // FIFO order
+  @@index([expiryDate])
+  @@map("stock_batches")
+}
+
+// ─── Audit trail for every stock movement ─────────────────────────────────────
+model StockTransaction {
+  id             Int             @id @default(autoincrement())
+  shopId         Int
+  productId      Int
+  batchId        Int?
+  type           TransactionType
+  qty            Float           // positive = in, negative = out
+  balanceAfter   Float           // running total for this product
+  unitCost       Decimal?        @db.Decimal(10, 2)
+  referenceId    Int?            // SaleId / PurchaseId / ReturnId
+  referenceType  String?         // 'Sale' | 'Purchase' | 'Adjustment'
+  note           String?
+  operatorId     Int?
+  createdAt      DateTime        @default(now())
+
+  shop      Shop     @relation(fields: [shopId], references: [id])
+  product   Product  @relation(fields: [productId], references: [id])
+  batch     StockBatch? @relation(fields: [batchId], references: [id])
+  operator  User?    @relation(fields: [operatorId], references: [id])
+
+  @@index([shopId, productId])
+  @@index([shopId, type])
+  @@index([createdAt])
+  @@map("stock_transactions")
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SUPPLIER & PURCHASE LAYER
+// ══════════════════════════════════════════════════════════════════════════════
+
+model Supplier {
+  id        Int      @id @default(autoincrement())
+  shopId    Int
+  name      String
+  mobile    String?
+  email     String?
+  address   String?
+  gstNo     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  deletedAt DateTime?
+
+  shop      Shop       @relation(fields: [shopId], references: [id])
+  purchases Purchase[]
+
+  @@index([shopId])
+  @@map("suppliers")
+}
+
+model Purchase {
+  id            Int            @id @default(autoincrement())
+  shopId        Int
+  supplierId    Int?
+  invoiceNo     String?        // supplier's invoice number
+  internalRef   String?        // our reference
+  totalAmount   Decimal        @db.Decimal(12, 2)
+  taxAmount     Decimal        @default(0) @db.Decimal(10, 2)
+  discountAmount Decimal       @default(0) @db.Decimal(10, 2)
+  grandTotal    Decimal        @db.Decimal(12, 2)
+  paymentMode   PaymentMode    @default(Cash)
+  status        PurchaseStatus @default(received)
+  notes         String?
+  purchasedAt   DateTime       @default(now())
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  operatorId    Int?
+
+  shop     Shop      @relation(fields: [shopId], references: [id])
+  supplier Supplier? @relation(fields: [supplierId], references: [id])
+  operator User?     @relation(fields: [operatorId], references: [id])
+
+  items       PurchaseItem[]
+  stockBatches StockBatch[]
+  returns     PurchaseReturn[]
+
+  @@index([shopId])
+  @@index([supplierId])
+  @@map("purchases")
+}
+
+model PurchaseItem {
+  id            Int     @id @default(autoincrement())
+  purchaseId    Int
+  productId     Int
+  qty           Float
+  purchasePrice Decimal @db.Decimal(10, 2)
+  sellingPrice  Decimal @db.Decimal(10, 2)
+  mrp           Decimal? @db.Decimal(10, 2)
+  taxPercent    Float   @default(0)
+  taxAmount     Decimal @default(0) @db.Decimal(10, 2)
+  lineTotal     Decimal @db.Decimal(12, 2)
+  expiryDate    DateTime?
+  batchNo       String?
+
+  purchase Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id])
+
+  @@index([purchaseId])
+  @@map("purchase_items")
+}
+
+model PurchaseReturn {
+  id         Int      @id @default(autoincrement())
+  purchaseId Int
+  reason     String?
+  totalQty   Float
+  totalAmount Decimal @db.Decimal(10, 2)
+  returnedAt DateTime @default(now())
+  operatorId Int?
+
+  purchase Purchase @relation(fields: [purchaseId], references: [id])
+
+  @@map("purchase_returns")
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CUSTOMER LAYER
+// ══════════════════════════════════════════════════════════════════════════════
+
+model Customer {
+  id              Int      @id @default(autoincrement())
+  shopId          Int
+  name            String
+  mobile          String?
+  email           String?
+  address         String?
+  gstNo           String?  // for B2B customers
+  loyaltyPoints   Float    @default(0)
+  totalSpent      Decimal  @default(0) @db.Decimal(12, 2)
+  totalOrders     Int      @default(0)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime?
+
+  shop   Shop   @relation(fields: [shopId], references: [id])
+  sales  Sale[]
+
+  pointsHistory CustomerPoint[]
+  credits       CustomerCredit[]
+
+  @@index([shopId])
+  @@index([mobile])
+  @@map("customers")
+}
+
+model CustomerPoint {
+  id            Int      @id @default(autoincrement())
+  customerId    Int
+  saleId        Int?
+  pointsEarned  Float    @default(0)
+  pointsUsed    Float    @default(0)
+  balanceAfter  Float
+  note          String?
+  createdAt     DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  sale     Sale?    @relation(fields: [saleId], references: [id])
+
+  @@index([customerId])
+  @@map("customer_points")
+}
+
+model CustomerCredit {
+  id           Int          @id @default(autoincrement())
+  customerId   Int
+  shopId       Int
+  saleId       Int?         @unique
+  amountDue    Decimal      @db.Decimal(10, 2)
+  amountPaid   Decimal      @default(0) @db.Decimal(10, 2)
+  dueDate      DateTime?
+  status       CreditStatus @default(pending)
+  note         String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  customer Customer       @relation(fields: [customerId], references: [id])
+  sale Sale? @relation("SaleCredit", fields: [saleId], references: [id])
+  payments CreditPayment[]
+
+  @@index([customerId])
+  @@index([status])
+  @@map("customer_credits")
+}
+
+model CreditPayment {
+  id         Int      @id @default(autoincrement())
+  creditId   Int
+  amount     Decimal  @db.Decimal(10, 2)
+  paymentMode PaymentMode @default(Cash)
+  note       String?
+  paidAt     DateTime @default(now())
+  receivedById Int?
+
+  credit     CustomerCredit @relation(fields: [creditId], references: [id])
+  receivedBy User?          @relation(fields: [receivedById], references: [id])
+
+  @@map("credit_payments")
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SALES LAYER
+// ══════════════════════════════════════════════════════════════════════════════
+
+model Sale {
+  id             Int        @id @default(autoincrement())
+  shopId         Int
+  invoiceNo      String
+  customerId     Int?
+  operatorId     Int?
+  subtotal       Decimal    @db.Decimal(12, 2)
+  discountAmount Decimal    @default(0) @db.Decimal(10, 2)
+  taxAmount      Decimal    @default(0) @db.Decimal(10, 2)
+  cessAmount     Decimal    @default(0) @db.Decimal(10, 2)
+  roundOff       Decimal    @default(0) @db.Decimal(5, 2)
+  grandTotal     Decimal    @db.Decimal(12, 2)
+  amountPaid     Decimal    @db.Decimal(12, 2)
+  changeReturned Decimal    @default(0) @db.Decimal(10, 2)
+  pointsEarned   Float      @default(0)
+  pointsRedeemed Float      @default(0)
+  paymentMode    PaymentMode @default(Cash)
+  status         SaleStatus  @default(completed)
+  notes          String?
+  saleDate       DateTime    @default(now())
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  shop     Shop      @relation(fields: [shopId], references: [id])
+  customer Customer? @relation(fields: [customerId], references: [id])
+  operator User? @relation("SaleOperator", fields: [operatorId], references: [id])
+  items         SaleItem[]
+  returns       SaleReturn[]
+  pointsHistory CustomerPoint[]
+  credit CustomerCredit? @relation("SaleCredit")
+
+  @@unique([shopId, invoiceNo])
+  @@index([shopId])
+  @@index([customerId])
+  @@index([saleDate])
+  @@map("sales")
+}
+
+model SaleItem {
+  id              Int     @id @default(autoincrement())
+  saleId          Int
+  productId       Int
+  batchId         Int?                          // FIFO batch consumed
+  productName     String                        // snapshot
+  barcodeSnapshot String?                       // snapshot
+  qty             Float
+  rate            Decimal @db.Decimal(10, 2)    // selling price at time of sale
+  mrp             Decimal? @db.Decimal(10, 2)
+  discountPercent Float   @default(0)
+  discountAmount  Decimal @default(0) @db.Decimal(10, 2)
+  taxPercent      Float   @default(0)           // snapshot from product
+  taxAmount       Decimal @default(0) @db.Decimal(10, 2)
+  cessPercent     Float   @default(0)
+  cessAmount      Decimal @default(0) @db.Decimal(10, 2)
+  lineTotal       Decimal @db.Decimal(12, 2)
+
+  sale    Sale       @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product Product    @relation(fields: [productId], references: [id])
+  batch   StockBatch? @relation(fields: [batchId], references: [id])
+
+  returnItems SaleReturnItem[]
+
+  @@index([saleId])
+  @@index([productId])
+  @@map("sale_items")
+}
+
+// ─── Returns ──────────────────────────────────────────────────────────────────
+model SaleReturn {
+  id            Int      @id @default(autoincrement())
+  shopId        Int
+  saleId        Int
+  returnInvoice String?
+  reason        String?
+  refundAmount  Decimal  @db.Decimal(10, 2)
+  refundMode    PaymentMode @default(Cash)
+  restockItems  Boolean  @default(true)   // put items back in stock?
+  operatorId    Int?
+  returnedAt    DateTime @default(now())
+
+  shop     Shop    @relation(fields: [shopId], references: [id])
+  sale     Sale    @relation(fields: [saleId], references: [id])
+  operator User?   @relation(fields: [operatorId], references: [id])
+
+  items SaleReturnItem[]
+
+  @@index([shopId])
+  @@index([saleId])
+  @@map("sale_returns")
+}
+
+model SaleReturnItem {
+  id           Int    @id @default(autoincrement())
+  returnId     Int
+  saleItemId   Int
+  productId    Int
+  qty          Float
+  refundAmount Decimal @db.Decimal(10, 2)
+
+  saleReturn SaleReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  saleItem   SaleItem   @relation(fields: [saleItemId], references: [id])
+  product    Product    @relation(fields: [productId], references: [id])
+
+  @@map("sale_return_items")
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// NOTIFICATIONS & AUDIT
+// ══════════════════════════════════════════════════════════════════════════════
+
+model Notification {
+  id          Int              @id @default(autoincrement())
+  shopId      Int
+  userId      Int?
+  type        NotificationType
+  title       String
+  message     String
+  referenceId Int?
+  referenceType String?
+  isRead      Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+
+  shop Shop @relation(fields: [shopId], references: [id])
+
+  @@index([shopId, isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  shopId     Int?
+  userId     Int?
+  action     String   // e.g. 'sale.created', 'product.deleted'
+  tableName  String?
+  recordId   Int?
+  oldValues  Json?
+  newValues  Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  shop Shop? @relation(fields: [shopId], references: [id])
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([shopId])
+  @@index([userId])
+  @@index([action])
+  @@map("audit_logs")
+}
