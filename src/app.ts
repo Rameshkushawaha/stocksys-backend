@@ -19,7 +19,8 @@ const app = express();
 app.use(helmet());
 app.use(cors({
   // origin: process.env.CORS_ORIGIN?.split(',') ?? ['http://localhost:4200'],
-  origin: [process.env.CORS_ORIGIN ?? 'http://localhost:4200', 'http://localhost:4200'], 
+  // origin: [process.env.CORS_ORIGIN ?? 'http://localhost:4200', 'http://localhost:4200'], 
+  origin: '*', // Allow all origins (for development only, change in production)
   credentials: true,
 }));
 app.use(express.json({ limit: '2mb' }));
