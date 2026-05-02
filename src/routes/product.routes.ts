@@ -26,7 +26,7 @@ r.post('/categories', requireRole(UserRole.admin), asyncHandler(async (req: any,
   res.status(201).json(ok(await svc.createCategory(req.user.shopId!, req.body.name, req.body.parentId)));
 }));
 
-r.post('/', requireRole(UserRole.admin, UserRole.stock_adder), asyncHandler(async (req: any, res) => {
+r.post('/addProduct', requireRole(UserRole.admin, UserRole.stock_adder), asyncHandler(async (req: any, res) => {
   res.status(201).json(ok(await svc.createProduct(req.user.shopId!, { ...req.body, operatorId: req.user.sub })));
 }));
 
@@ -37,6 +37,18 @@ r.put('/:id', requireRole(UserRole.admin), asyncHandler(async (req: any, res) =>
 r.delete('/:id', requireRole(UserRole.admin), asyncHandler(async (req: any, res) => {
   await svc.deleteProduct(req.user.shopId!, parseInt(req.params.id));
   res.json(ok(null, 'Product deleted'));
+}));
+
+r.post('/addStock', requireRole(UserRole.admin, UserRole.stock_adder), asyncHandler(async (req: any, res) => {
+  // const { productId, qty, purchasePrice, sellingPrice } = req.body;
+  const qty = Number(req.query.qty);
+  const result = await svc.addStock(req.user.shopId, req.query.barcode,qty);
+  res.json(ok(result));
+}));
+
+r.post('/addNewBatchStock', requireRole(UserRole.admin, UserRole.stock_adder), asyncHandler(async (req: any, res) => {
+  const result = await svc.addNewBatchStock(req.user.shopId, req.body);
+  res.json(ok(result));
 }));
 
 export default r;

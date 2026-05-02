@@ -146,3 +146,82 @@ export async function getUnits(shopId: number) {
 export async function createCategory(shopId: number, name: string, parentId?: number) {
   return prisma.category.upsert({ where: { shopId_name: { shopId, name } }, update: {}, create: { shopId, name, parentId } });
 }
+
+// add stock to existing product
+
+export async function addStock(shopId: number, barcode: string, qty: number) {
+  debugger;
+  const product = await prisma.product.findFirst({ 
+    where: { shopId:shopId, barcode : barcode, isActive: true } 
+  });
+  console.log('Product found for barcode:', barcode,shopId);
+  console.log('Adding stock for product:', product);
+  if (!product) throw new AppError('Product not found', 404);
+
+  return prisma.$transaction(async (tx) => {
+    // 1. Find the most recently created batch for this product
+    const latestBatch = await tx.stockBatch.findFirst({
+      where: { productId: product.id, shopId: shopId },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (!latestBatch) {
+      // If no batch exists, create the first one instead of updating
+      // return await tx.stockBatch.create({
+      //   data: {
+      //     shopId,
+      //     productId: product.id,
+      //     qtyReceived: qty,
+      //     qtyAvailable: qty,
+      //     purchasePrice: 0,
+      //     sellingPrice: 0
+      //   }
+      // });
+      throw new AppError('No existing stock batch found for this product. Please create an initial batch first.', 400);
+    }
+
+    // 2. Update that specific batch using its Unique ID
+    return await tx.stockBatch.update({
+      where: { id: latestBatch.id },
+      data: { 
+        qtyAvailable: { increment: qty },
+        qtyReceived: { increment: qty }
+      }
+    });
+  });
+}
+
+export async function addNewBatchStock(shopId: number,data: { barcode: string; qty: number, purchasePrice?: number; sellingPrice?: number,mrp?: number, expiryDate?: Date }) {
+  const product = await prisma.product.findFirst({ 
+    where: { shopId : shopId, barcode: data.barcode, isActive: true } 
+  });
+  
+  if (!product) throw new AppError('Product not found', 404);
+
+  var lastbatchNo = await prisma.stockBatch.findFirst({
+    where: { productId: product.id, shopId: shopId },
+    orderBy: { createdAt: 'desc' },
+    select: { batchNo: true }
+  });
+  
+  const newBatchNo = lastbatchNo && lastbatchNo.batchNo ? parseInt(lastbatchNo.batchNo) + 1 : 1;
+  return prisma.$transaction(async (tx) => {
+    // Create a NEW batch for this stock arrival
+    return await tx.stockBatch.create({
+      data: {
+        shopId: shopId,
+        productId: product.id,
+        qtyReceived: data.qty,
+        qtyAvailable: data.qty,
+        // Using existing product prices as defaults
+        purchasePrice: data.purchasePrice ?? 0,
+        sellingPrice: data.sellingPrice ?? 0,
+        batchNo:  newBatchNo.toString(),
+        expiryDate: data.expiryDate,
+        mrp: data.mrp,
+        isActive: true,
+        createdAt: new Date(),
+      }
+    });
+  });
+}
