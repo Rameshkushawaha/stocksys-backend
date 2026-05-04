@@ -77,7 +77,7 @@ export async function createProduct(shopId: number, data: {
   // Check barcode uniqueness
   if (data.barcode) {
     const existing = await prisma.product.findFirst({ where: { shopId, barcode: data.barcode, deletedAt: null } });
-    if (existing) throw new AppError('Barcode already registered', 409);
+    if (existing) throw new AppError('Barcode already registered', 200);
   }
 
   return prisma.$transaction(async (tx) => {
@@ -120,7 +120,7 @@ export async function createProduct(shopId: number, data: {
 // ── Update product ────────────────────────────────────────────────────────────
 export async function updateProduct(shopId: number, productId: number, data: Record<string, any>) {
   const product = await prisma.product.findFirst({ where: { id: productId, shopId, deletedAt: null } });
-  if (!product) throw new AppError('Product not found', 404);
+  if (!product) throw new AppError('Product not found', 200);
 
   const { initialStock, purchasePrice, sellingPrice, ...rest } = data;
   return prisma.product.update({ where: { id: productId }, data: rest, select: productSelect });
@@ -129,7 +129,7 @@ export async function updateProduct(shopId: number, productId: number, data: Rec
 // ── Soft-delete product ───────────────────────────────────────────────────────
 export async function deleteProduct(shopId: number, productId: number) {
   const product = await prisma.product.findFirst({ where: { id: productId, shopId } });
-  if (!product) throw new AppError('Product not found', 404);
+  if (!product) throw new AppError('Product not found', 200);
   await prisma.product.update({ where: { id: productId }, data: { deletedAt: new Date(), isActive: false } });
 }
 
@@ -156,7 +156,7 @@ export async function addStock(shopId: number, barcode: string, qty: number) {
   });
   console.log('Product found for barcode:', barcode,shopId);
   console.log('Adding stock for product:', product);
-  if (!product) throw new AppError('Product not found', 404);
+  if (!product) throw new AppError('Product not found', 200);
 
   return prisma.$transaction(async (tx) => {
     // 1. Find the most recently created batch for this product
@@ -196,7 +196,7 @@ export async function addNewBatchStock(shopId: number,data: { barcode: string; q
     where: { shopId : shopId, barcode: data.barcode, isActive: true } 
   });
   
-  if (!product) throw new AppError('Product not found', 404);
+  if (!product) throw new AppError('Product not found', 200);
 
   var lastbatchNo = await prisma.stockBatch.findFirst({
     where: { productId: product.id, shopId: shopId },
