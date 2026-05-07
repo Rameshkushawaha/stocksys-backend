@@ -154,8 +154,7 @@ export async function addStock(shopId: number, barcode: string, qty: number) {
   const product = await prisma.product.findFirst({ 
     where: { shopId:shopId, barcode : barcode, isActive: true } 
   });
-  console.log('Product found for barcode:', barcode,shopId);
-  console.log('Adding stock for product:', product);
+  
   if (!product) throw new AppError('Product not found', 200);
 
   return prisma.$transaction(async (tx) => {
@@ -166,18 +165,7 @@ export async function addStock(shopId: number, barcode: string, qty: number) {
     });
 
     if (!latestBatch) {
-      // If no batch exists, create the first one instead of updating
-      // return await tx.stockBatch.create({
-      //   data: {
-      //     shopId,
-      //     productId: product.id,
-      //     qtyReceived: qty,
-      //     qtyAvailable: qty,
-      //     purchasePrice: 0,
-      //     sellingPrice: 0
-      //   }
-      // });
-      throw new AppError('No existing stock batch found for this product. Please create an initial batch first.', 400);
+      throw new AppError('No existing stock batch found for this product. Please create an initial batch first.', 200);
     }
 
     // 2. Update that specific batch using its Unique ID
