@@ -205,7 +205,7 @@ export async function addNewBatchStock(shopId: number,data: { barcode: string; q
         purchasePrice: data.purchasePrice ?? 0,
         sellingPrice: data.sellingPrice ?? 0,
         batchNo:  newBatchNo.toString(),
-        expiryDate: data.expiryDate,
+        expiryDate: data.expiryDate ? new Date(data.expiryDate) : null,
         mrp: data.mrp,
         isActive: true,
         createdAt: new Date(),
