@@ -5,12 +5,13 @@ import { calcBillTotals } from '../utils/gst';
 import { nextInvoiceNo } from '../utils/invoice';
 import { AppError } from '../middleware/error.middleware';
 import { CartItem, CheckoutPayload } from '../types';
+import { TIMEOUT } from 'dns';
 
 // ─── Checkout ─────────────────────────────────────────────────────────────────
 export async function checkout(shopId: number, payload: CheckoutPayload, operatorId?: number) {
   const { items, customerId, paymentMode = 'Cash', discountAmount = 0, pointsToRedeem = 0, notes } = payload;
 
-  if (!items?.length) throw new AppError('Cart is empty', 400);
+  if (!items?.length) throw new AppError('Cart is empty', 200);
 
   // Load shop settings (GST included flag, loyalty ratio)
   const settings = await prisma.shopSettings.findUnique({ where: { shopId } });
@@ -25,7 +26,7 @@ export async function checkout(shopId: number, payload: CheckoutPayload, operato
         where: { shopId, barcode: item.barcodeId, isActive: true, deletedAt: null },
         include: { unit: true },
       });
-      if (!product) throw new AppError(`Product not found: ${item.barcodeId}`, 404);
+      if (!product) throw new AppError(`Product not found: ${item.barcodeId}`, 200);
 
       const fifo = await allocateFifo(shopId, product.id, item.quantity);
       const rate = fifo[0].unitPrice; // FIFO selling price
@@ -46,8 +47,8 @@ export async function checkout(shopId: number, payload: CheckoutPayload, operato
   let pointsDiscount = 0;
   if (pointsToRedeem > 0 && customerId) {
     const customer = await prisma.customer.findFirst({ where: { id: customerId, shopId } });
-    if (!customer) throw new AppError('Customer not found', 404);
-    if (customer.loyaltyPoints < pointsToRedeem) throw new AppError('Insufficient loyalty points', 400);
+    if (!customer) throw new AppError('Customer not found', 200);
+    if (customer.loyaltyPoints < pointsToRedeem) throw new AppError('Insufficient loyalty points', 200);
     pointsDiscount = pointsToRedeem * pointsRatio;
   }
 
@@ -60,13 +61,14 @@ export async function checkout(shopId: number, payload: CheckoutPayload, operato
   const pointsEarned = settings?.enableLoyalty ? Math.floor(grandTotal * pointsPerRupee) : 0;
 
   const invoiceNo = await nextInvoiceNo(shopId);
-
   // ── All DB writes in one transaction ───────────────────────────────────────
   const sale = await prisma.$transaction(async (tx) => {
     // 1. Create sale header
-    const sale = await tx.sale.create({
+    const createdsale = await tx.sale.create({
       data: {
-        shopId, invoiceNo, customerId: customerId ?? null,
+        shopId : shopId,
+        invoiceNo : invoiceNo, 
+        customerId: customerId ?? null,
         operatorId: operatorId ?? null,
         subtotal: bill.subtotal,
         discountAmount: totalDiscount,
@@ -82,7 +84,6 @@ export async function checkout(shopId: number, payload: CheckoutPayload, operato
         notes: notes ?? null,
       },
     });
-
     // 2. Create sale items + stock transactions
     for (let i = 0; i < resolvedItems.length; i++) {
       const r = resolvedItems[i];
@@ -92,7 +93,7 @@ export async function checkout(shopId: number, payload: CheckoutPayload, operato
       for (const alloc of r.fifo) {
         await tx.saleItem.create({
           data: {
-            saleId: sale.id,
+            saleId: createdsale.id,
             productId: r.product.id,
             batchId: alloc.batchId,
             productName: r.product.name,
@@ -120,7 +121,7 @@ export async function checkout(shopId: number, payload: CheckoutPayload, operato
             shopId, productId: r.product.id, batchId: alloc.batchId,
             type: TransactionType.sale, qty: -alloc.qty,
             balanceAfter: remaining?.qtyAvailable ?? 0,
-            referenceId: sale.id, referenceType: 'Sale',
+            referenceId: createdsale.id, referenceType: 'Sale',
             operatorId: operatorId ?? null,
           },
         });
@@ -140,14 +141,14 @@ export async function checkout(shopId: number, payload: CheckoutPayload, operato
         },
       });
       await tx.customerPoint.create({
-        data: { customerId, saleId: sale.id, pointsEarned, pointsUsed: pointsToRedeem, balanceAfter: newBalance },
+        data: { customerId, saleId: createdsale.id, pointsEarned, pointsUsed: pointsToRedeem, balanceAfter: newBalance },
       });
     }
 
     // 4. Credit (udhaar) record
     if (paymentMode === 'Credit' && customerId) {
       await tx.customerCredit.create({
-        data: { customerId, shopId, saleId: sale.id, amountDue: grandTotal, dueDate: new Date(Date.now() + 30 * 86_400_000) },
+        data: { customerId, shopId, saleId: createdsale.id, amountDue: grandTotal, dueDate: new Date(Date.now() + 30 * 86_400_000) },
       });
     }
 
@@ -166,8 +167,10 @@ export async function checkout(shopId: number, payload: CheckoutPayload, operato
         });
       }
     }
-
-    return sale;
+    console.log(`Sale ${createdsale.id} created with invoice ${invoiceNo}`);
+    return createdsale;
+  },{
+    timeout: 20000, // 10 seconds
   });
 
   return getSaleById(sale.id);
@@ -175,6 +178,10 @@ export async function checkout(shopId: number, payload: CheckoutPayload, operato
 
 // ─── Get sale by ID ───────────────────────────────────────────────────────────
 export async function getSaleById(id: number) {
+  if (!id) {
+    console.error("getSaleById called with missing ID",id);
+    return null; 
+  }
   return prisma.sale.findUnique({
     where: { id },
     include: {
