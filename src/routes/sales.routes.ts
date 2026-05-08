@@ -31,4 +31,12 @@ r.post('/:id/return', requireRole(UserRole.admin, UserRole.seller), asyncHandler
   res.json(ok(result));
 }));
 
+r.post('/outbounditem', requireRole(UserRole.admin, UserRole.seller), asyncHandler(async (req: any, res) => {
+  const barcode = req.query.barcode ;
+  const qty = req.query.qty;
+  if (!barcode || !qty) return res.status(400).json({ success: false, error: 'Missing barcode or qty' });
+  const result = await svc.processOutboundItem(barcode as string, parseInt(qty as string), req.user.shopId!);
+  res.json(ok(result));
+}));
+
 export default r;

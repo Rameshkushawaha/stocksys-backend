@@ -275,3 +275,30 @@ export async function processSaleReturn(
     return saleReturn;
   });
 }
+
+//process outbound item (used in sale, transfer, etc) - deducts stock and logs transaction
+export async function processOutboundItem(barcode: string, qty: number, shopId: number) {
+  // 1. Find the oldest batch with stock (FIFO)
+  const product = await prisma.product.findFirst({ where: { shopId, barcode, isActive: true, deletedAt: null } });
+  if (!product) {
+    throw new AppError(`Product not found for barcode: ${barcode}`,200);
+  }
+  const productId = product.id;
+
+  const batch = await prisma.stockBatch.findFirst({
+    where: { productId, shopId, qtyAvailable: { gt: 0 }, isActive: true },
+    orderBy: { createdAt: 'asc' }
+  });
+
+  if (!batch || batch.qtyAvailable < qty) {
+    throw new AppError(`Insufficient stock for Product ID: ${productId}`,200);
+  }
+
+  // 2. Deduct the stock
+  await prisma.stockBatch.update({
+    where: { id: batch.id },
+    data: { qtyAvailable: { decrement: qty } }
+  });
+
+  return {product,batch};
+}
