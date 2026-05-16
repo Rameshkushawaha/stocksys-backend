@@ -295,10 +295,35 @@ export async function processOutboundItem(barcode: string, qty: number, shopId: 
   }
 
   // 2. Deduct the stock
-  await prisma.stockBatch.update({
-    where: { id: batch.id },
-    data: { qtyAvailable: { decrement: qty } }
-  });
+  // await prisma.stockBatch.update({
+  //   where: { id: batch.id },
+  //   data: { qtyAvailable: { decrement: qty } }
+  // });
 
   return {product,batch};
 }
+
+// export async function removeItemFromCart(cartItemId: number, quantity: number, operatorId?: number) {
+//   const cartItem = await prisma.stockBatch.findUnique({ where: { id: cartItemId }});
+//   if (!cartItem) throw new AppError('Cart item not found', 404);
+
+//   return prisma.$transaction(async (tx) => {
+//     // Restock the item
+//     if (cartItem.batchId) {
+//       await tx.stockBatch.update({ where: { id: cartItem.batchId }, data: { qtyAvailable: { increment: quantity } } });
+//       const b = await tx.stockBatch.findUnique({ where: { id: cartItem.batchId } });
+//       await tx.stockTransaction.create({
+//         data: {
+//           shopId: cartItem.shopId, productId: cartItem.productId, batchId: cartItem.batchId,
+//           type: TransactionType.sale_return, qty: quantity,
+//           balanceAfter: b?.qtyAvailable ?? 0,
+//           referenceId: cartItem.id, referenceType: 'CartItemRemoval',
+//           operatorId: operatorId ?? null,
+//         },
+//       });
+//     }
+
+//     // Remove the cart item
+//     await tx.cartItem.delete({ where: { id: cartItemId } });
+//   });
+// } 
